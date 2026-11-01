@@ -1,0 +1,12 @@
+*.jsonl
+report*.json
+*.report.json
+*.analysis.md
+*.dryrun.md
+.env
+bin/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
