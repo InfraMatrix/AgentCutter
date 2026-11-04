@@ -63,6 +63,21 @@ def test_network_activity_counts():
     assert sum(d["count"] for d in n["by_destination"]) == n["total_connects"]
 
 
+def test_network_unpaired_send_has_null_first_response(tmp_path):
+    """A UDP probe with no reply: null latency, never 0."""
+    base = {"ts": "2026-01-01T00:00:00Z", "session_id": 702, "agent_name": "x"}
+    cap = _write_jsonl(tmp_path / "udp.jsonl", [
+        {**base, "type": "net_connect", "pid": 7,
+         "daddr": "127.0.0.1", "dport": 53, "protocol": 17},
+        {**base, "type": "net_send", "pid": 7,
+         "daddr": "127.0.0.1", "dport": 53, "protocol": 17,
+         "bytes": 1, "hostname": ""},
+    ])
+    n = t.network_activity(cap, 702)
+    assert n["total_connects"] == 1 and n["sends"] == 1 and n["recvs"] == 0
+    assert n["first_response_us"] is None
+
+
 def test_call_tool_compact_json():
     out = t.call_tool(fixture(MULTI), "get_process", {"pid": 4000})
     assert len(out) <= 20_000
@@ -164,8 +179,9 @@ def test_files_opened_includes_rw_and_close(tmp_path):
     assert f["write_bytes"] == 20
     by_type = {e["type"]: e for e in f["files"]}
     assert by_type["file_read"]["bytes"] == 10
+    # measured latency passes through; unknown (0/sub-microsecond) is null
     assert by_type["file_read"]["duration_us"] == 5
-    assert by_type["file_write"]["duration_us"] == 0
+    assert by_type["file_write"]["duration_us"] is None
     assert by_type["file_close"]["read_bytes"] == 10
     assert by_type["file_close"]["write_bytes"] == 20
 
@@ -196,6 +212,9 @@ def test_network_activity_includes_sends_recvs(tmp_path):
     assert n["hostnames"] == ["example.com"]
     # first_response_us is the smallest nonzero pairing latency
     assert n["first_response_us"] == 42
+    # the unpaired recv carries null latency, not 0
+    latencies = [x["latency_us"] for x in n["transfers"] if x["type"] == "net_recv"]
+    assert sorted(l is None for l in latencies) == [False, True]
     assert len(n["by_destination"]) == 1
     d = n["by_destination"][0]
     assert d["dest"] == "93.184.216.34:443"

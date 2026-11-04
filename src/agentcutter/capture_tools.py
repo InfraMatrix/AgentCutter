@@ -191,10 +191,12 @@ def files_opened(
 
     Offsets are capture offsets (ms since capture_start), matching the
     report's offset_ms/start_ms/end_ms. file_read/file_write items carry
-    this call's bytes and duration_us (0 = unknown, entry missed or
-    sub-microsecond — never a dropped event). file_close items carry the
-    open's cumulative read_bytes/write_bytes/duration_ms; byte totals
-    below come from file_close only so nothing double-counts.
+    this call's bytes and duration_us (null = unknown: the entry probe
+    missed or the call was sub-microsecond — never a dropped event).
+    file_close items carry the open's cumulative read_bytes/write_bytes/
+    duration_ms (0 here means the eBPF byte accounting saw no bytes;
+    captures taken without io accounting report 0 — see demo.sh);
+    byte totals below come from file_close only so nothing double-counts.
     """
     limit = min(max(int(limit), 1), MAX_FILES)
     start = _capture_start(capture)
@@ -239,7 +241,10 @@ def files_opened(
                 item["mode"] = ev["mode"]
             if etype in ("file_read", "file_write"):
                 item["bytes"] = ev.get("bytes", 0)
-                item["duration_us"] = ev.get("duration_us", 0)
+                # 0 means unknown (or sub-microsecond), not "instant":
+                # surface as null so 0 keeps meaning measured-zero.
+                dur = ev.get("duration_us")
+                item["duration_us"] = dur if dur else None
             if etype == "file_close":
                 item["read_bytes"] = ev.get("read_bytes", 0)
                 item["write_bytes"] = ev.get("write_bytes", 0)
@@ -269,7 +274,9 @@ def network_activity(capture: Path | str, session_id: int | str) -> dict:
     send/recv volume sits beside it as sends/sent_bytes/recvs/recv_bytes.
     hostnames are DNS qnames / TLS SNIs parsed from send buffers (empty
     when the buffer holds no name); first_response_us is the smallest
-    nonzero send->recv latency (time-to-first-byte, 0/absent = unpaired).
+    nonzero send->recv latency (time-to-first-byte, null when no send was
+    ever paired with a recv — e.g. a UDP probe with no reply).
+    Latency fields are null when unknown; 0 would mean a measured zero.
     """
     events: list[dict] = []
     transfers: list[dict] = []
@@ -280,7 +287,7 @@ def network_activity(capture: Path | str, session_id: int | str) -> dict:
     sent_bytes = 0
     recvs = 0
     recv_bytes = 0
-    first_response_us = 0
+    first_response_us = None
 
     def dest_entry(dest: str) -> dict:
         entry = dests.get(dest)
@@ -318,7 +325,7 @@ def network_activity(capture: Path | str, session_id: int | str) -> dict:
                     }
                 )
             continue
-        lat = ev.get("latency_us", 0) or 0
+        lat = ev.get("latency_us") or None  # 0/absent = unpaired, not instant
         if etype == "net_send":
             sends += 1
             entry["sends"] += 1

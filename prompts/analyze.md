@@ -24,7 +24,7 @@ AgentLoupe sees the OS, not the model. It never sees prompts, completions, token
 - memory and sync/wait syscalls (mmap, futex, epoll) are mostly language-runtime background. Don't treat them as agent behavior unless they are wildly out of proportion.
 - If has_syscall_summary is false, syscall sections are empty. Say so and rely on processes, markers, files, and network.
 - file_close events exist in the raw capture (with per-open byte totals) but the timeline does not turn them into markers or files_touched counts; rely on the files_opened tool for byte totals.
-- latency_us 0 on a read/write/recv event means unknown (entry missed or sub-microsecond), never a dropped event; only nonzero recv latency (paired send→recv on the same thread/socket) measures time-to-first-byte.
+- latency fields are null when unknown, never 0-as-unknown: duration_us null on a read/write event (entry missed or sub-microsecond), latency_us null on an unpaired recv, first_response_us null when no send ever paired with a recv (e.g. a UDP probe with no reply). 0 would mean a measured zero. Never call a null latency "fast."
 - Never invent numbers. Every figure you cite must come from the report. If you derive one (e.g., a percentage of session time), show the arithmetic briefly. When comparing capture-offset timestamps across sessions, convert to session-relative first or state the base explicitly.
 
 ## What to produce
