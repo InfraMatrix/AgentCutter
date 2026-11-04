@@ -49,3 +49,31 @@ def test_all_fixtures_reduce(tmp_path):
             fix, out=tmp_path / (fix.stem + ".report.json"), binary=BIN
         )
         assert report["sessions"], fix.name
+
+
+def _report_with_markers(n):
+    return {
+        "notes": [],
+        "sessions": [{
+            "session_id": 1,
+            "processes": [],
+            "markers": [
+                {"ts": f"t{i}", "offset_ms": i, "type": "file_open",
+                 "pid": 1, "detail": f"/f{i}"}
+                for i in range(n)
+            ],
+        }],
+    }
+
+
+def test_trim_markers_keeps_head_and_tail():
+    report = pipeline.trim_report(_report_with_markers(10), max_markers=4)
+    got = [m["detail"] for m in report["sessions"][0]["markers"]]
+    assert got == ["/f0", "/f1", "/f8", "/f9"]
+    assert any("dropped from the middle" in n for n in report["notes"])
+
+
+def test_trim_markers_untouched_under_cap():
+    report = pipeline.trim_report(_report_with_markers(3), max_markers=4)
+    assert len(report["sessions"][0]["markers"]) == 3
+    assert report["notes"] == []

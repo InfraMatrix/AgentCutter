@@ -104,6 +104,19 @@ def test_inventory_survives_truncation():
     assert "truncated for context size" in msg
 
 
+def test_inventory_notes_orphan_end():
+    report = {
+        "sessions": [
+            {"session_id": 9, "agent": "a", "duration_ms": 10,
+             "events": 5, "processes": [], "markers": [],
+             "session_end_reason": "orphan_timeout",
+             "orphan_gap_ms": 1200, "still_running": [42]},
+        ]
+    }
+    msg = agent_mod.build_first_message(report, char_cap=5000)
+    assert "orphan_timeout" in msg and "+1200ms" in msg and "42" in msg
+
+
 def test_turn_cap(monkeypatch):
     class Endless:
         def create(self, **kwargs):

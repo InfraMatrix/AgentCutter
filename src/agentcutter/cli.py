@@ -24,9 +24,11 @@ def dry_run_analysis(report: dict, capture: Path) -> str:
     lines.append("")
     for s in report.get("sessions", []):
         sid = s.get("session_id")
+        end = s.get("session_end_reason") or "?"
         lines.append(
             f"## Session {sid} ({s.get('agent')}, "
-            f"duration {s.get('duration_ms')}ms, {s.get('events')} events)"
+            f"duration {s.get('duration_ms')}ms, {s.get('events')} events, "
+            f"end {end})"
         )
         top = (s.get("top_programs_by_wall_time") or [])[:3]
         for p in top:
@@ -37,9 +39,23 @@ def dry_run_analysis(report: dict, capture: Path) -> str:
             for r in rep["repeated"]:
                 lines.append(f"  - `{r['command']}` x{r['count']}")
         net = capture_tools.network_activity(capture, sid)
-        lines.append(f"- network connects: {net['total_connects']}")
+        lines.append(
+            f"- network connects: {net['total_connects']}, "
+            f"sends: {net['sends']} ({net['sent_bytes']} bytes), "
+            f"recvs: {net['recvs']} ({net['recv_bytes']} bytes)"
+        )
+        if net["hostnames"]:
+            lines.append(f"- hostnames: {', '.join(net['hostnames'])}")
+        if net["first_response_us"]:
+            lines.append(
+                f"- first send->recv latency: {net['first_response_us']}us"
+            )
         files = capture_tools.files_opened(capture, sid)
-        lines.append(f"- file events: {files['total_matching']}")
+        lines.append(
+            f"- file events: {files['total_matching']} "
+            f"(reads: {files['file_read_calls']}, writes: {files['file_write_calls']}, "
+            f"read bytes: {files['read_bytes']}, written: {files['write_bytes']})"
+        )
         ev = capture_tools.get_session_events(capture, sid, limit=3)
         lines.append(f"- sample events verified: {ev['returned']}/{ev['total_matching']}")
         lines.append("")

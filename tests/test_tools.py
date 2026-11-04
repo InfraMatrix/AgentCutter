@@ -81,3 +81,77 @@ def test_unknown_session_lists_known_ids():
     assert r["total_connects"] == 0
     assert "error" in r
     assert 300 in r["known_session_ids"] and 400 in r["known_session_ids"]
+
+
+def _write_jsonl(path, events):
+    import json as _json
+
+    with open(path, "w", encoding="utf-8") as f:
+        for ev in events:
+            f.write(_json.dumps(ev) + "\n")
+    return path
+
+
+def _io_capture(path):
+    base = {"ts": "2026-01-01T00:00:00Z", "session_id": 700, "agent_name": "x"}
+    return _write_jsonl(path, [
+        {**base, "type": "file_open", "pid": 7, "path": "/tmp/f.txt", "open_flags": 1},
+        {**base, "type": "file_read", "pid": 7, "path": "/tmp/f.txt",
+         "bytes": 10, "duration_us": 5},
+        {**base, "type": "file_write", "pid": 7, "path": "/tmp/f.txt",
+         "bytes": 20, "duration_us": 0},
+        {**base, "type": "file_close", "pid": 7, "path": "/tmp/f.txt",
+         "read_bytes": 10, "write_bytes": 20, "duration_ms": 3},
+    ])
+
+
+def test_files_opened_includes_rw_and_close(tmp_path):
+    cap = _io_capture(tmp_path / "io.jsonl")
+    f = t.files_opened(cap, 700)
+    assert f["total_matching"] == 4
+    assert f["file_read_calls"] == 1
+    assert f["file_write_calls"] == 1
+    # byte totals come from file_close only (per-call bytes not double-counted)
+    assert f["read_bytes"] == 10
+    assert f["write_bytes"] == 20
+    by_type = {e["type"]: e for e in f["files"]}
+    assert by_type["file_read"]["bytes"] == 10
+    assert by_type["file_read"]["duration_us"] == 5
+    assert by_type["file_write"]["duration_us"] == 0
+    assert by_type["file_close"]["read_bytes"] == 10
+    assert by_type["file_close"]["write_bytes"] == 20
+
+
+def _net_capture(path):
+    base = {"ts": "2026-01-01T00:00:00Z", "session_id": 701, "agent_name": "x"}
+    return _write_jsonl(path, [
+        {**base, "type": "net_connect", "pid": 7,
+         "daddr": "93.184.216.34", "dport": 443, "protocol": 6},
+        {**base, "type": "net_send", "pid": 7,
+         "daddr": "93.184.216.34", "dport": 443, "protocol": 6,
+         "bytes": 100, "hostname": "example.com"},
+        {**base, "type": "net_recv", "pid": 7,
+         "daddr": "93.184.216.34", "dport": 443, "protocol": 6,
+         "bytes": 50, "latency_us": 42, "hostname": "example.com"},
+        {**base, "type": "net_recv", "pid": 7,
+         "daddr": "93.184.216.34", "dport": 443, "protocol": 6,
+         "bytes": 10, "latency_us": 0},
+    ])
+
+
+def test_network_activity_includes_sends_recvs(tmp_path):
+    cap = _net_capture(tmp_path / "net.jsonl")
+    n = t.network_activity(cap, 701)
+    assert n["total_connects"] == 1
+    assert n["sends"] == 1 and n["sent_bytes"] == 100
+    assert n["recvs"] == 2 and n["recv_bytes"] == 60
+    assert n["hostnames"] == ["example.com"]
+    # first_response_us is the smallest nonzero pairing latency
+    assert n["first_response_us"] == 42
+    assert len(n["by_destination"]) == 1
+    d = n["by_destination"][0]
+    assert d["dest"] == "93.184.216.34:443"
+    assert d["count"] == 1  # connects-only, unchanged semantics
+    assert d["sends"] == 1 and d["recvs"] == 2
+    assert d["hostnames"] == ["example.com"]
+    assert sum(x["count"] for x in n["by_destination"]) == n["total_connects"]

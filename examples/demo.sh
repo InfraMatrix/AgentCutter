@@ -18,10 +18,25 @@ mkdir -p "$STAGE"
 OUT=$STAGE/demo-capture.jsonl
 PY=$(readlink -f "$(command -v python3)")
 
-echo "== 1/4 build loupe-timeline"
-if [ ! -x "$ACUTTER/bin/loupe-timeline" ]; then
-  (cd "$LOUPE_DIR" && go build -buildvcs=false -o "$ACUTTER/bin/loupe-timeline" ./cmd/loupe-timeline)
+build_tool() {
+  # $1 = cmd dir, $2 = output binary. Rebuild when missing or stale.
+  if [ ! -x "$2" ] || [ "$LOUPE_DIR/cmd/$1/main.go" -nt "$2" ]; then
+    (cd "$LOUPE_DIR" && go build -buildvcs=false -o "$2" "./cmd/$1")
+  fi
+}
+
+echo "== 1/4 build loader + loupe-timeline + loupe-scorecard"
+# The loader binary must match the BPF object (ABI): a stale agentloupe
+# decodes nothing ("abi version X, want Y" in the loader output) and the
+# capture comes out empty even though kernel counters show events flowing.
+if [ ! -x "$LOUPE_DIR/agentloupe" ] \
+  || [ "$LOUPE_DIR/cmd/agentloupe/main.go" -nt "$LOUPE_DIR/agentloupe" ] \
+  || [ "$LOUPE_DIR/bpf/agentloupe.bpf.c" -nt "$LOUPE_DIR/agentloupe" ] \
+  || [ "$LOUPE_DIR/bpf/agentloupe.h" -nt "$LOUPE_DIR/agentloupe" ]; then
+  make -C "$LOUPE_DIR" build
 fi
+build_tool loupe-timeline "$ACUTTER/bin/loupe-timeline"
+build_tool loupe-scorecard "$ACUTTER/bin/loupe-scorecard"
 
 echo "== 2/4 capture live agent workload (needs sudo for the loader)"
 sudo -v
@@ -33,10 +48,14 @@ agents:
       interpreter: $PY
       argv_contains: agentcutter-demo
 EOF
+# --enable-file-rw-events + --enable-net-send-events so the analysis can
+# show per-call byte counts, send/recv volume, and hostnames (empty on
+# loopback, which the analysis should say rather than guess about).
 sudo "$LOUPE_DIR/agentloupe" \
   --config "$STAGE/agents.yaml" \
   --bpf-object "$LOUPE_DIR/bpf/agentloupe.bpf.o" \
   --enable-syscall-summary --syscall-interval 500ms \
+  --enable-file-rw-events --enable-net-send-events \
   --max-runtime 55s --output "$OUT" &
 LOADER=$!
 sleep 6
@@ -46,11 +65,19 @@ python3 "$ACUTTER/examples/demo-workload.py" agentcutter-demo-run2
 wait "$LOADER"
 sudo chown "$USER:$USER" "$OUT"
 wc -l "$OUT"
+if [ ! -s "$OUT" ]; then
+  echo "demo: ERROR: capture $OUT is empty — nothing was decoded." >&2
+  echo "demo: see the loader output above: 'abi version X, want Y' means a" >&2
+  echo "demo: stale loader binary (fix: make -C \"$LOUPE_DIR\" build);" >&2
+  echo "demo: 'no agent sessions seen' means the agents.yaml rule matched nothing." >&2
+  exit 1
+fi
 
 CUTTER="$ACUTTER/.venv/bin/agentcutter"
 [ -x "$CUTTER" ] || CUTTER="agentcutter"
 
-echo "== 3/4 timeline summary"
+echo "== 3/4 scorecard + timeline summary"
+"$ACUTTER/bin/loupe-scorecard" "$OUT"
 "$ACUTTER/bin/loupe-timeline" "$OUT" | head -30
 
 echo "== 4/4 AgentCutter analysis"

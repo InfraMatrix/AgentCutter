@@ -44,8 +44,15 @@ the TTY), from the repo root:
 bash examples/demo.sh
 ```
 
-It builds `bin/loupe-timeline` if missing, runs the loader for ~55s with
-`--enable-syscall-summary` while the workload runs twice, prints the
-`loupe-timeline` summary, then the AgentCutter analysis (real Muse Spark
-call if `META_MODEL_API_KEY` is set, `--dry-run` otherwise). Outputs land
+It rebuilds `bin/loupe-timeline` (and `bin/loupe-scorecard`) when missing
+or stale, runs the loader for ~55s with `--enable-syscall-summary` plus
+`--enable-file-rw-events` and `--enable-net-send-events` while the
+workload runs twice, prints the scorecard and the `loupe-timeline`
+summary, then the AgentCutter analysis (real Muse Spark call if
+`META_MODEL_API_KEY` is set, `--dry-run` otherwise). Outputs land
 in `/tmp/ac-demo/`. `LOUPE_DIR` overrides the AgentLoupe checkout location.
+
+Note: `live-capture.jsonl` was taken with `--enable-syscall-summary` only,
+so it holds no `file_read`/`file_write`/`net_send`/`net_recv` events —
+byte/hostname fields are absent there and the analysis says so. Fresh
+`demo.sh` captures include them.
