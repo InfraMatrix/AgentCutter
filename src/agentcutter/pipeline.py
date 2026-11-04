@@ -48,10 +48,13 @@ def trim_report(
     max_processes: int = 100,
     max_markers: int = 500,
 ) -> dict:
-    """Keep the top-N processes by duration_ms and first-N markers per session.
+    """Keep the top-N processes by duration_ms and a head+tail slice of markers.
 
-    Mutates and returns the report. Records what was dropped in notes so the
-    model knows the counts are partial.
+    Markers keep the first and last halves of the cap so phase structure at
+    both ends survives (startup imports at the head, network/exit at the
+    tail); a middle-only window would hide one end of the session. Mutates
+    and returns the report. Records what was dropped in notes so the model
+    knows the counts are partial.
     """
     notes = report.setdefault("notes", [])
     for session in report.get("sessions", []):
@@ -67,10 +70,13 @@ def trim_report(
         markers = session.get("markers", [])
         if len(markers) > max_markers:
             dropped = len(markers) - max_markers
-            session["markers"] = markers[:max_markers]
+            head = (max_markers + 1) // 2
+            tail = max_markers - head
+            session["markers"] = markers[:head] + markers[len(markers) - tail:]
             notes.append(
                 f"session {session.get('session_id')}: markers trimmed "
-                f"to first {max_markers} ({dropped} dropped)"
+                f"to first {head} + last {tail} of {len(markers)} "
+                f"({dropped} dropped from the middle)"
             )
     return report
 

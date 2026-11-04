@@ -166,6 +166,17 @@ def _capture_start(capture: Path | str) -> datetime | None:
     return None
 
 
+FILE_TYPES = (
+    "file_open",
+    "file_unlink",
+    "file_rename",
+    "file_chmod",
+    "file_read",
+    "file_write",
+    "file_close",
+)
+
+
 def files_opened(
     capture: Path | str,
     session_id: int | str,
@@ -173,20 +184,27 @@ def files_opened(
     end_ms: int | None = None,
     limit: int = MAX_FILES,
 ) -> dict:
-    """File open/mutation events in a session, optional offset-ms window."""
+    """File open/mutation/read/write/close events in a session, optional offset-ms window.
+
+    Offsets are capture offsets (ms since capture_start), matching the
+    report's offset_ms/start_ms/end_ms. file_read/file_write items carry
+    this call's bytes and duration_us (0 = unknown, entry missed or
+    sub-microsecond — never a dropped event). file_close items carry the
+    open's cumulative read_bytes/write_bytes/duration_ms; byte totals
+    below come from file_close only so nothing double-counts.
+    """
     limit = min(max(int(limit), 1), MAX_FILES)
     start = _capture_start(capture)
     out: list[dict] = []
     total = 0
+    read_calls = 0
+    write_calls = 0
+    read_bytes = 0
+    write_bytes = 0
     for ev in _iter_events(capture):
         if not _sid_matches(ev.get("session_id"), session_id):
             continue
-        if ev.get("type") not in (
-            "file_open",
-            "file_unlink",
-            "file_rename",
-            "file_chmod",
-        ):
+        if ev.get("type") not in FILE_TYPES:
             continue
         ts = _parse_ts(ev.get("ts", ""))
         offset = int((ts - start).total_seconds() * 1000) if start and ts else None
@@ -195,19 +213,44 @@ def files_opened(
         if end_ms is not None and (offset is None or offset > end_ms):
             continue
         total += 1
+        etype = ev["type"]
+        if etype == "file_read":
+            read_calls += 1
+        elif etype == "file_write":
+            write_calls += 1
+        elif etype == "file_close":
+            if isinstance(ev.get("read_bytes"), int):
+                read_bytes += ev["read_bytes"]
+            if isinstance(ev.get("write_bytes"), int):
+                write_bytes += ev["write_bytes"]
         if len(out) < limit:
-            item = {"type": ev["type"], "pid": ev.get("pid"), "offset_ms": offset}
+            item = {"type": etype, "pid": ev.get("pid"), "offset_ms": offset}
             if ev.get("path"):
                 item["path"] = ev["path"]
+            if ev.get("open_flags") is not None and etype == "file_open":
+                item["flags"] = ev["open_flags"]
             if ev.get("old_path") or ev.get("new_path"):
                 item["old_path"] = ev.get("old_path")
                 item["new_path"] = ev.get("new_path")
+            if ev.get("mode") and etype == "file_chmod":
+                item["mode"] = ev["mode"]
+            if etype in ("file_read", "file_write"):
+                item["bytes"] = ev.get("bytes", 0)
+                item["duration_us"] = ev.get("duration_us", 0)
+            if etype == "file_close":
+                item["read_bytes"] = ev.get("read_bytes", 0)
+                item["write_bytes"] = ev.get("write_bytes", 0)
+                item["duration_ms"] = ev.get("duration_ms", 0)
             out.append(item)
     result = {
         "session_id": session_id,
         "total_matching": total,
         "returned": len(out),
         "truncated": total > len(out),
+        "file_read_calls": read_calls,
+        "file_write_calls": write_calls,
+        "read_bytes": read_bytes,
+        "write_bytes": write_bytes,
         "files": out,
     }
     if total == 0:
@@ -217,34 +260,107 @@ def files_opened(
 
 
 def network_activity(capture: Path | str, session_id: int | str) -> dict:
-    """Net connects in a session, compact per-event plus per-destination counts."""
+    """Net connects/sends/recvs in a session, plus per-destination counts.
+
+    by_destination[].count stays connects-only (sums to total_connects);
+    send/recv volume sits beside it as sends/sent_bytes/recvs/recv_bytes.
+    hostnames are DNS qnames / TLS SNIs parsed from send buffers (empty
+    when the buffer holds no name); first_response_us is the smallest
+    nonzero send->recv latency (time-to-first-byte, 0/absent = unpaired).
+    """
     events: list[dict] = []
-    dests: Counter[str] = Counter()
+    transfers: list[dict] = []
+    dests: dict[str, dict] = {}
+    hostnames: set[str] = set()
     total = 0
+    sends = 0
+    sent_bytes = 0
+    recvs = 0
+    recv_bytes = 0
+    first_response_us = 0
+
+    def dest_entry(dest: str) -> dict:
+        entry = dests.get(dest)
+        if entry is None:
+            entry = {
+                "dest": dest,
+                "count": 0,
+                "sends": 0,
+                "sent_bytes": 0,
+                "recvs": 0,
+                "recv_bytes": 0,
+                "hostnames": [],
+            }
+            dests[dest] = entry
+        return entry
+
     for ev in _iter_events(capture):
-        if not _sid_matches(ev.get("session_id"), session_id) or ev.get("type") != "net_connect":
+        if not _sid_matches(ev.get("session_id"), session_id):
             continue
-        total += 1
+        etype = ev.get("type")
+        if etype not in ("net_connect", "net_send", "net_recv"):
+            continue
         dest = f"{ev.get('daddr')}:{ev.get('dport')}"
-        dests[dest] += 1
-        if len(events) < MAX_NET:
-            events.append(
+        entry = dest_entry(dest)
+        if etype == "net_connect":
+            total += 1
+            entry["count"] += 1
+            if len(events) < MAX_NET:
+                events.append(
+                    {
+                        "pid": ev.get("pid"),
+                        "dest": dest,
+                        "dns": bool(ev.get("dns")),
+                        "ts": ev.get("ts"),
+                    }
+                )
+            continue
+        lat = ev.get("latency_us", 0) or 0
+        if etype == "net_send":
+            sends += 1
+            entry["sends"] += 1
+            sent_bytes += ev.get("bytes", 0) or 0
+            entry["sent_bytes"] += ev.get("bytes", 0) or 0
+        else:  # net_recv
+            recvs += 1
+            entry["recvs"] += 1
+            recv_bytes += ev.get("bytes", 0) or 0
+            entry["recv_bytes"] += ev.get("bytes", 0) or 0
+            if lat and (not first_response_us or lat < first_response_us):
+                first_response_us = lat
+        if ev.get("hostname"):
+            hostnames.add(ev["hostname"])
+            if ev["hostname"] not in entry["hostnames"]:
+                entry["hostnames"].append(ev["hostname"])
+        if len(transfers) < MAX_NET:
+            transfers.append(
                 {
+                    "type": etype,
                     "pid": ev.get("pid"),
                     "dest": dest,
-                    "dns": bool(ev.get("dns")),
+                    "bytes": ev.get("bytes", 0),
+                    "latency_us": lat,
+                    "hostname": ev.get("hostname", ""),
                     "ts": ev.get("ts"),
                 }
             )
+    by_dest = sorted(
+        dests.values(), key=lambda d: (-(d["count"] + d["sends"] + d["recvs"]), d["dest"])
+    )[:MAX_NET]
     result = {
         "session_id": session_id,
         "total_connects": total,
         "returned": len(events),
         "truncated": total > len(events),
-        "by_destination": [
-            {"dest": d, "count": c} for d, c in dests.most_common(MAX_NET)
-        ],
+        "sends": sends,
+        "sent_bytes": sent_bytes,
+        "recvs": recvs,
+        "recv_bytes": recv_bytes,
+        "hostnames": sorted(hostnames),
+        "first_response_us": first_response_us,
+        "by_destination": by_dest,
         "events": events,
+        "transfers": transfers,
     }
     if total == 0:
         result.update(_no_session("network_activity", session_id))
@@ -300,8 +416,11 @@ TOOL_SCHEMAS = [
     {
         "name": "files_opened",
         "description": (
-            "File open/mutation events in a session within an optional "
-            "offset-ms window (offsets from capture start)."
+            "File open/mutation/read/write/close events in a session within "
+            "an optional offset-ms window (offsets from capture start, "
+            "matching the report). Read/write items carry per-call bytes "
+            "and duration_us; close items carry cumulative read/write "
+            "bytes; totals come from closes only."
         ),
         "input_schema": {
             "type": "object",
@@ -317,8 +436,10 @@ TOOL_SCHEMAS = [
     {
         "name": "network_activity",
         "description": (
-            "Network connects in a session: per-event detail plus "
-            "per-destination counts."
+            "Network connects plus send/recv transfers in a session: "
+            "per-event detail, per-destination counts (count stays "
+            "connects-only; sends/recvs beside it), hostnames "
+            "(DNS/TLS SNI), and first_response_us send->recv latency."
         ),
         "input_schema": {
             "type": "object",

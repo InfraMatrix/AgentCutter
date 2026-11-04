@@ -12,9 +12,12 @@ import time
 
 tag = sys.argv[1]
 
-# Phase 1: file activity.
+# Phase 1: file activity (write + read-back, so the capture holds both
+# file_write/file_read events and file_close byte totals).
 with open(f"/tmp/{tag}.txt", "w") as f:
     f.write("agentcutter live demo\n")
+with open(f"/tmp/{tag}.txt") as f:
+    assert f.read() == "agentcutter live demo\n"
 time.sleep(2)
 
 # Phase 2: child tools, twice each.
@@ -24,6 +27,8 @@ for _ in range(2):
 time.sleep(2)
 
 # Phase 3: network (TCP to a local listener, UDP connect + send).
+# With --enable-net-send-events these produce net_send/net_recv events
+# (per-call bytes, loopback, empty hostname, paired recv latency).
 listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 listener.bind(("127.0.0.1", 0))
 listener.listen(1)

@@ -35,11 +35,18 @@ def session_inventory(report: dict) -> str:
     report JSON below is truncated for context size."""
     lines = []
     for s in report.get("sessions", []):
+        tail = ""
+        if s.get("session_end_reason"):
+            tail = f", end {s['session_end_reason']}"
+            if s.get("orphan_gap_ms"):
+                tail += f" (+{s['orphan_gap_ms']}ms past root exit)"
+            if s.get("still_running"):
+                tail += f" still running: {s['still_running']}"
         lines.append(
             f"- session {s.get('session_id')} ({s.get('agent')}): "
             f"duration {s.get('duration_ms')}ms, {s.get('events')} events, "
             f"{len(s.get('processes', []))} processes, "
-            f"{len(s.get('markers', []))} markers"
+            f"{len(s.get('markers', []))} markers{tail}"
         )
     return "\n".join(lines)
 
