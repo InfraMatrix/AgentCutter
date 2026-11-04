@@ -17,6 +17,17 @@ def default_output(capture: Path) -> Path:
     return capture.parent / f"{name}.analysis.md"
 
 
+def _syscalls_total(session: dict) -> int:
+    """Explicit syscall denominator: annotated, else summed from the table."""
+    if session.get("syscalls_total") is not None:
+        return session["syscalls_total"]
+    return sum(
+        c.get("count", 0)
+        for c in (session.get("syscall_distribution") or [])
+        if isinstance(c, dict)
+    )
+
+
 def dry_run_analysis(report: dict, capture: Path) -> str:
     """Deterministic no-API analysis: exercises pipeline + every tool."""
     lines = ["# AgentCutter dry-run analysis", ""]
@@ -27,8 +38,8 @@ def dry_run_analysis(report: dict, capture: Path) -> str:
         end = s.get("session_end_reason") or "?"
         lines.append(
             f"## Session {sid} ({s.get('agent')}, "
-            f"duration {s.get('duration_ms')}ms, {s.get('events')} events, "
-            f"end {end})"
+            f"duration {s.get('duration_ms')}ms, {s.get('events')} marker events, "
+            f"{_syscalls_total(s)} syscalls, end {end})"
         )
         top = (s.get("top_programs_by_wall_time") or [])[:3]
         for p in top:

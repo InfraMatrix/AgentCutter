@@ -55,7 +55,8 @@ def session_inventory(report: dict) -> str:
                 tail += f" still running: {s['still_running']}"
         lines.append(
             f"- session {s.get('session_id')} ({s.get('agent')}): "
-            f"duration {s.get('duration_ms')}ms, {s.get('events')} events, "
+            f"duration {s.get('duration_ms')}ms, {s.get('events')} marker "
+            f"events, {_syscalls_total(s)} syscalls, "
             f"{len(s.get('processes', []))} processes, "
             f"{len(s.get('markers', []))} markers{tail}"
         )

@@ -16,7 +16,7 @@ working on non-synthetic data.
   `kind: tool` + `interpreter`/`argv_contains` rule matching
   `/tmp/ac-capture/workload.py`, which ran twice (file writes, `true`/`echo`
   children, TCP + UDP connects, sleeps for phase structure).
-- Result: 382 events, 2 sessions (`demo-agent`), vendored here unchanged.
+- Result: 382 marker events, 2 sessions (`demo-agent`), vendored here unchanged.
 
 ## Files
 

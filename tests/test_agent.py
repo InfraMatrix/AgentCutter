@@ -163,6 +163,34 @@ def test_per_session_calls_keep_all_sections(monkeypatch):
     assert "ANALYSIS-" in compare_body and "file_open" not in compare_body
 
 
+def test_inventory_labels_marker_events_with_syscall_denominator():
+    """Inventory names both bases: marker events vs syscalls, never bare 'events'.
+
+    Regression: the session header said "273 events" while category
+    percentages divided by the 1535-syscall total, so the model mixed
+    the bases. Both labels now travel with the numbers.
+    """
+    report = {
+        "sessions": [
+            {"session_id": "7", "agent": "a", "duration_ms": 10,
+             "events": 273,
+             "syscall_distribution": [{"name": "read", "count": 1000},
+                                      {"name": "write", "count": 535}],
+             "processes": [1], "markers": [1, 2]},
+        ]
+    }
+    msg = agent_mod.build_first_message(report, char_cap=5000)
+    assert "273 marker events" in msg
+    assert "1535 syscalls" in msg
+    # annotated total wins over summing the table
+    report["sessions"][0]["syscalls_total"] = 1535
+    report["sessions"][0]["syscall_distribution"] = []
+    msg2 = agent_mod.build_first_message(report, char_cap=5000)
+    assert "1535 syscalls" in msg2
+    assert agent_mod._session_summary_line(report["sessions"][0]).count(
+        "marker events") == 1
+
+
 def test_inventory_survives_truncation():
     report = {
         "sessions": [
@@ -237,3 +265,5 @@ def test_dry_run_analysis_exercises_tools():
         )
     text = dry_run_analysis(report, fixture("timeline_multi_agent.jsonl"))
     assert "Session 300" in text and "Session 400" in text
+    # session headers carry both bases, never a bare "N events" count
+    assert "marker events" in text and "syscalls" in text
