@@ -43,7 +43,7 @@ def test_get_process_argv_children_resources():
 
 def test_find_repeated_commands_shape():
     r = t.find_repeated_commands(fixture(MULTI), 300)
-    assert r["session_id"] == 300
+    assert r["session_id"] == "300"
     assert isinstance(r["repeated"], list)
     for item in r["repeated"]:
         assert item["count"] > 1
@@ -80,7 +80,55 @@ def test_unknown_session_lists_known_ids():
     r = t.network_activity(fixture(MULTI), 12345)
     assert r["total_connects"] == 0
     assert "error" in r
-    assert 300 in r["known_session_ids"] and 400 in r["known_session_ids"]
+    assert "300" in r["known_session_ids"] and "400" in r["known_session_ids"]
+
+
+def _big_id_capture(path):
+    """Write a capture with a uint64 session_id past float64's exact range."""
+    sid = 16896022792636465153  # > 2**53: JSON numbers lose precision here
+    assert sid > 2**53 and int(float(sid)) != sid
+    base = {"ts": "2026-01-01T00:00:00Z", "session_id": sid, "agent_name": "x"}
+    _write_jsonl(path, [
+        {**base, "type": "exec", "pid": 7, "argv": ["true"]},
+        {**base, "type": "exec", "pid": 7, "argv": ["true"]},
+        {**base, "type": "file_open", "pid": 7, "path": "/tmp/big.txt",
+         "open_flags": 1},
+        {**base, "type": "net_connect", "pid": 7,
+         "daddr": "127.0.0.1", "dport": 53, "protocol": 17},
+    ])
+    return sid
+
+
+def test_big_session_id_round_trip_all_tools(tmp_path):
+    """IDs >2**53 survive a report write -> JSON parse -> tool lookup.
+
+    Regression: the report used to carry session_id as a JSON number,
+    so JS-float consumers (the model) saw a rounded value and every
+    tool taking session_id matched nothing. String IDs pass through
+    verbatim and match whether the caller passes int or string.
+    """
+    import json as _json
+
+    cap = tmp_path / "big.jsonl"
+    sid = _big_id_capture(cap)
+    # string form survives a JSON round-trip exactly; float does not
+    assert _json.loads(_json.dumps({"sid": str(sid)}))["sid"] == str(sid)
+    for as_given in (sid, str(sid)):
+        ev = t.get_session_events(cap, as_given)
+        assert ev["total_matching"] == 4, as_given
+        assert ev["session_id"] == str(sid)
+        rep = t.find_repeated_commands(cap, as_given)
+        assert rep["repeated"] == [{"command": "true", "count": 2}]
+        assert rep["session_id"] == str(sid)
+        f = t.files_opened(cap, as_given)
+        assert f["total_matching"] == 1
+        assert f["session_id"] == str(sid)
+        n = t.network_activity(cap, as_given)
+        assert n["total_connects"] == 1
+        assert n["session_id"] == str(sid)
+    # unknown-ID hint lists the exact digit string
+    miss = t.get_session_events(cap, 999)
+    assert str(sid) in miss["known_session_ids"]
 
 
 def _write_jsonl(path, events):

@@ -51,6 +51,35 @@ def test_all_fixtures_reduce(tmp_path):
         assert report["sessions"], fix.name
 
 
+def test_normalize_report_ids_stringifies_big_ids(tmp_path):
+    big = 16896022792636465153
+    assert big > 2**53
+    report = {"sessions": [{"session_id": big, "processes": [], "markers": []}]}
+    pipeline.normalize_report_ids(report)
+    assert report["sessions"][0]["session_id"] == str(big)
+    # JSON round-trip keeps the exact digits (numbers would not in JS floats)
+    assert json.loads(json.dumps(report))["sessions"][0]["session_id"] == str(big)
+    # idempotent
+    pipeline.normalize_report_ids(report)
+    assert report["sessions"][0]["session_id"] == str(big)
+
+
+def test_add_syscalls_total_sums_distribution():
+    report = {"sessions": [{
+        "session_id": "1", "events": 273,
+        "syscall_distribution": [
+            {"name": "rt_sigaction", "count": 336},
+            {"name": "openat", "count": 171},
+        ],
+    }]}
+    pipeline.add_syscalls_total(report)
+    assert report["sessions"][0]["syscalls_total"] == 507
+    assert report["sessions"][0]["events"] == 273  # marker count untouched
+    # idempotent, and never overwrites an annotated value
+    pipeline.add_syscalls_total(report)
+    assert report["sessions"][0]["syscalls_total"] == 507
+
+
 def _report_with_markers(n):
     return {
         "notes": [],

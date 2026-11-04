@@ -47,7 +47,10 @@ def _known_session_ids(capture: Path | str) -> list:
     seen: list = []
     for ev in _iter_events(capture):
         sid = ev.get("session_id")
-        if sid is not None and sid not in seen:
+        if sid is None:
+            continue
+        sid = str(sid)
+        if sid not in seen:
             seen.append(sid)
     return seen
 
@@ -93,7 +96,7 @@ def get_session_events(
                 {k: v for k, v in ev.items() if k not in ("parent_session_id",)}
             )
     result = {
-        "session_id": session_id,
+        "session_id": str(session_id),
         "total_matching": total,
         "returned": len(matched),
         "truncated": total > len(matched),
@@ -148,7 +151,7 @@ def find_repeated_commands(capture: Path | str, session_id: int | str) -> dict:
         {"command": cmd, "count": n} for cmd, n in counts.most_common(MAX_GROUPS) if n > 1
     ]
     result = {
-        "session_id": session_id,
+        "session_id": str(session_id),
         "distinct_commands": len(counts),
         "repeated": repeated,
     }
@@ -243,7 +246,7 @@ def files_opened(
                 item["duration_ms"] = ev.get("duration_ms", 0)
             out.append(item)
     result = {
-        "session_id": session_id,
+        "session_id": str(session_id),
         "total_matching": total,
         "returned": len(out),
         "truncated": total > len(out),
@@ -348,7 +351,7 @@ def network_activity(capture: Path | str, session_id: int | str) -> dict:
         dests.values(), key=lambda d: (-(d["count"] + d["sends"] + d["recvs"]), d["dest"])
     )[:MAX_NET]
     result = {
-        "session_id": session_id,
+        "session_id": str(session_id),
         "total_connects": total,
         "returned": len(events),
         "truncated": total > len(events),
@@ -409,7 +412,7 @@ TOOL_SCHEMAS = [
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"session_id": {"type": "integer"}},
+            "properties": {"session_id": {"type": ["integer", "string"], "description": "Exact session_id digits from the report; pass through verbatim, do not round or reformat."}},
             "required": ["session_id"],
         },
     },
@@ -443,7 +446,7 @@ TOOL_SCHEMAS = [
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"session_id": {"type": "integer"}},
+            "properties": {"session_id": {"type": ["integer", "string"], "description": "Exact session_id digits from the report; pass through verbatim, do not round or reformat."}},
             "required": ["session_id"],
         },
     },

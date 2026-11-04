@@ -35,6 +35,39 @@ def run_timeline(capture: Path, binary: Path | str = BIN_PATH) -> dict:
     return json.loads(proc.stdout)
 
 
+def normalize_report_ids(report: dict) -> dict:
+    """Stringify 64-bit IDs so JSON keeps full precision.
+
+    loupe-timeline emits session_id as a JSON number; IDs past 2**53
+    lose precision in JS-float consumers (the model), which then passes
+    a rounded value back to the tools and matches nothing. Python ints
+    are exact, so convert here, right after json.loads, before the
+    report is written to disk or sent to the model. Idempotent.
+    """
+    for session in report.get("sessions", []):
+        sid = session.get("session_id")
+        if sid is not None and not isinstance(sid, str):
+            session["session_id"] = str(sid)
+    return report
+
+
+def add_syscalls_total(report: dict) -> dict:
+    """Annotate each session with its explicit syscall denominator.
+
+    `events` counts markers (exec/fork/exit/file/net markers); the
+    syscall_distribution counts sum to a different, larger total. The
+    reducer never emits that sum, so analyses divide by the wrong base.
+    Additive only: `events` is untouched. Idempotent.
+    """
+    for session in report.get("sessions", []):
+        if session.get("syscalls_total") is None:
+            dist = session.get("syscall_distribution") or []
+            session["syscalls_total"] = sum(
+                c.get("count", 0) for c in dist if isinstance(c, dict)
+            )
+    return report
+
+
 def strip_series(report: dict) -> dict:
     """Remove syscall_series fields (large, low value to the model)."""
     for session in report.get("sessions", []):
@@ -91,6 +124,8 @@ def build_report(
     """Full reduction step. Returns (report, report_path)."""
     capture = Path(capture)
     report = run_timeline(capture, binary)
+    normalize_report_ids(report)
+    add_syscalls_total(report)
     strip_series(report)
     trim_report(report, max_processes, max_markers)
     out = out or capture.parent / (capture.name.removesuffix(".jsonl") + ".report.json")
