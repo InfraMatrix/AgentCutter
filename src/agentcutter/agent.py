@@ -155,7 +155,8 @@ def build_session_message(
     )
 
 
-def _run_tool_loop(client, system_prompt: str, messages: list, capture, max_turns: int) -> str:
+def _run_tool_loop(client, system_prompt: str, messages: list, capture, max_turns: int,
+                   tool_opts: dict | None = None) -> str:
     """Run the tool-use loop for one message thread; return its final text."""
     parts: list[str] = []
     resp = None
@@ -179,7 +180,7 @@ def _run_tool_loop(client, system_prompt: str, messages: list, capture, max_turn
         results = []
         for tu in tool_uses:
             try:
-                output = call_tool(capture, tu.name, tu.input or {})
+                output = call_tool(capture, tu.name, tu.input or {}, **(tool_opts or {}))
             except Exception as exc:  # tools must never break the loop
                 output = json.dumps({"error": str(exc)})
             results.append(
@@ -216,8 +217,12 @@ def run_analysis(
     system_prompt: str,
     capture: Path | str,
     max_turns: int = MAX_TURNS,
+    tool_opts: dict | None = None,
 ) -> str:
     """Analyze each session in its own model call, then compare summaries.
+
+    tool_opts (spans / agent_process / binary) are pipeline options for
+    the span tools; the model never supplies them.
 
     One message thread per session keeps a large capture from truncating
     whole sessions (or their later sections) out of a single context
@@ -231,14 +236,14 @@ def run_analysis(
     if not sessions:
         # No sessions: fall back to the legacy single message.
         messages: list[dict] = [{"role": "user", "content": build_first_message(report)}]
-        return _run_tool_loop(client, system_prompt, messages, capture, max_turns)
+        return _run_tool_loop(client, system_prompt, messages, capture, max_turns, tool_opts)
     sections: list[str] = []
     summaries: list[str] = []
     for session in sessions:
         messages = [
             {"role": "user", "content": build_session_message(session, report)}
         ]
-        text = _run_tool_loop(client, system_prompt, messages, capture, max_turns)
+        text = _run_tool_loop(client, system_prompt, messages, capture, max_turns, tool_opts)
         sections.append(
             f"## Session {session.get('session_id')} "
             f"({session.get('agent')})\n\n{text}"
@@ -261,7 +266,7 @@ def run_analysis(
             }
         ]
         comparison = _run_tool_loop(
-            client, system_prompt, compare_messages, capture, max_turns
+            client, system_prompt, compare_messages, capture, max_turns, tool_opts
         )
         sections.append("## Cross-session comparison\n\n" + comparison)
     return "\n\n".join(sections)

@@ -56,3 +56,16 @@ Note: `live-capture.jsonl` was taken with `--enable-syscall-summary` only,
 so it holds no `file_read`/`file_write`/`net_send`/`net_recv` events —
 byte/hostname fields are absent there and the analysis says so. Fresh
 `demo.sh` captures include them.
+
+## Tool spans
+
+`agentcutter analyze` reports per-tool-call spans (AgentLoupe
+`loupe-timeline` `tool_spans`) and the analysis ranks tool calls by wall
+time and resources. With a Claude Code hook file (AgentLoupe
+`hooks/agentloupe_hook.py`) saved as `<capture>.spans.jsonl`, or passed
+with `--spans`, spans carry tool names and inputs. `--agent-process NAME`
+re-roots spans for agents started through a wrapper. The tools
+`get_tool_spans(session_id, sort_by=wall|cpu|read_bytes|net)` and
+`get_span(span_id)` give the model every span, not just the trimmed top.
+A real Claude Code run with hooks is canned in AgentLoupe
+`examples/canned/` (`make demo-canned` there).
