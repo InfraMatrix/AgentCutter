@@ -25,9 +25,14 @@ def _iter_events(capture: Path | str):
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # capture_meta is the loader's capture-level record (clock
+            # anchor + probe set, session_id 0), not an agent event.
+            if isinstance(ev, dict) and ev.get("type") == "capture_meta":
+                continue
+            yield ev
 
 
 def _sid_matches(event_sid, want) -> bool:
@@ -378,6 +383,227 @@ def network_activity(capture: Path | str, session_id: int | str) -> dict:
     return result
 
 
+# ---- tool spans (from the reducer's tool_spans; see AgentLoupe README) ----
+
+MAX_SPANS = 50
+SPAN_SORTS = ("wall", "cpu", "read_bytes", "net")
+_SPAN_CACHE: dict = {}
+
+
+def _spans_report(capture: Path | str, spans: Path | str | None = None,
+                  agent_process: str | None = None, binary: Path | str | None = None) -> dict:
+    """The full (untrimmed) reducer report, cached per capture/spans file.
+
+    Tool spans are computed by loupe-timeline (process tree + optional
+    harness hook file), not re-derived here, so every number matches the
+    report the model was given.
+    """
+    from agentcutter.pipeline import BIN_PATH, run_timeline  # avoid import cycle
+
+    cap = Path(capture)
+    key = (str(cap.resolve()), cap.stat().st_mtime_ns,
+           str(spans) if spans else None,
+           Path(spans).stat().st_mtime_ns if spans and Path(spans).exists() else None,
+           agent_process, str(binary or BIN_PATH))
+    rep = _SPAN_CACHE.get(key)
+    if rep is None:
+        rep = run_timeline(cap, binary or BIN_PATH, spans=spans, agent_process=agent_process)
+        _SPAN_CACHE.clear()
+        _SPAN_CACHE[key] = rep
+    return rep
+
+
+def _net_volume(res: dict) -> int | None:
+    sent, recv = res.get("net_sent_bytes"), res.get("net_recv_bytes")
+    if sent is None and recv is None:
+        return None
+    return (sent or 0) + (recv or 0)
+
+
+def _cpu_ms(res: dict) -> int | None:
+    u, s = res.get("cpu_user_ms"), res.get("cpu_sys_ms")
+    if u is None and s is None:
+        return None
+    return (u or 0) + (s or 0)
+
+
+def span_key(span: dict) -> str:
+    """Identity for "same tool call repeated": tool + its main argument,
+    else the process argv."""
+    inp = span.get("input") or {}
+    if span.get("tool_name"):
+        arg = inp.get("command") or inp.get("file_path") or inp.get("pattern") \
+            or inp.get("url") or inp.get("path") or ""
+        return f"{span['tool_name']}: {' '.join(str(arg).split())}"
+    return " ".join(span.get("argv") or []) or span.get("program") or "?"
+
+
+def compact_span(span: dict) -> dict:
+    """One-line view of a span for listings (full detail via get_span)."""
+    res = span.get("resources") or {}
+    out = {
+        "span_id": span.get("span_id"),
+        "source": span.get("source"),
+        "attribution": span.get("attribution"),
+        "tool_name": span.get("tool_name"),
+        "what": span_key(span)[:200],
+        "program": span.get("program"),
+        "start_ms": span.get("start_ms"),
+        "wall_ms": span.get("wall_ms"),
+        "process_wall_ms": span.get("process_wall_ms"),
+        "harness_duration_ms": span.get("harness_duration_ms"),
+        "cpu_ms": _cpu_ms(res),
+        "cpu_incomplete": res.get("cpu_incomplete", False),
+        "max_rss_kb": res.get("max_rss_kb"),
+        "processes": res.get("processes"),
+        "file_opens": res.get("file_opens"),
+        "file_reads": res.get("file_reads"),
+        "read_bytes": res.get("read_bytes"),
+        "write_bytes": res.get("write_bytes"),
+        "files_mutated": res.get("files_mutated"),
+        "net_connects": res.get("net_connects"),
+        "net_sends": res.get("net_sends"),
+        "net_recvs": res.get("net_recvs"),
+        "net_bytes": _net_volume(res),
+        "syscalls_total": res.get("syscalls_total"),
+        "exit_code": span.get("exit_code"),
+        "status": span.get("status"),
+    }
+    flags = []
+    if span.get("role") == "hook":
+        flags.append("hook_overhead")
+    if span.get("outlived_span"):
+        flags.append("outlived_span")
+    if span.get("parallel_with"):
+        flags.append(f"parallel_with:{len(span['parallel_with'])}")
+    if span.get("open_ended"):
+        flags.append("open_ended")
+    out["flags"] = flags
+    return {k: v for k, v in out.items() if v is not None and v != []}
+
+
+def _sort_value(span: dict, sort_by: str):
+    res = span.get("resources") or {}
+    if sort_by == "cpu":
+        return _cpu_ms(res)
+    if sort_by == "read_bytes":
+        return res.get("read_bytes")
+    if sort_by == "net":
+        vol = _net_volume(res)
+        return vol if vol is not None else res.get("net_connects")
+    return span.get("wall_ms")
+
+
+def repeated_spans(spans: list[dict]) -> list[dict]:
+    """Groups of identical spans (same tool + argv/command), count > 1,
+    by total wall time: candidate waste. Hook spans are excluded."""
+    groups: dict[str, dict] = {}
+    for sp in spans:
+        if sp.get("role") == "hook":
+            continue
+        key = span_key(sp)
+        g = groups.setdefault(key, {"what": key[:200], "count": 0, "total_wall_ms": 0,
+                                    "total_cpu_ms": None, "span_ids": []})
+        g["count"] += 1
+        g["total_wall_ms"] += sp.get("wall_ms") or 0
+        cpu = _cpu_ms(sp.get("resources") or {})
+        if cpu is not None:
+            g["total_cpu_ms"] = (g["total_cpu_ms"] or 0) + cpu
+        if len(g["span_ids"]) < 20:
+            g["span_ids"].append(sp.get("span_id"))
+    rep = [g for g in groups.values() if g["count"] > 1]
+    rep.sort(key=lambda g: (-g["total_wall_ms"], -g["count"], g["what"]))
+    return rep[:MAX_GROUPS]
+
+
+def get_tool_spans(
+    capture: Path | str,
+    session_id: int | str,
+    sort_by: str = "wall",
+    limit: int = MAX_SPANS,
+    include_hooks: bool = False,
+    spans: Path | str | None = None,
+    agent_process: str | None = None,
+    binary: Path | str | None = None,
+) -> dict:
+    """Per-tool-call spans for one session, costliest first.
+
+    sort_by: wall | cpu | read_bytes | net. Spans whose sort field is null
+    (signal not collected, or not attributable: time-window spans have no
+    CPU) sort last, never as zero. Hook-overhead spans are excluded unless
+    include_hooks.
+    """
+    if sort_by not in SPAN_SORTS:
+        return {"error": f"sort_by must be one of {list(SPAN_SORTS)}"}
+    limit = min(max(int(limit), 1), MAX_SPANS)
+    rep = _spans_report(capture, spans, agent_process, binary)
+    for s in rep.get("sessions", []):
+        if not _sid_matches(s.get("session_id"), session_id):
+            continue
+        all_spans = s.get("tool_spans") or []
+        hooks = [sp for sp in all_spans if sp.get("role") == "hook"]
+        pool = all_spans if include_hooks else [sp for sp in all_spans if sp.get("role") != "hook"]
+        ranked = sorted(
+            pool,
+            key=lambda sp: (_sort_value(sp, sort_by) is None,
+                            -(_sort_value(sp, sort_by) or 0), sp.get("start_ms") or 0),
+        )
+        hook_wall = sum(sp.get("wall_ms") or 0 for sp in hooks)
+        hook_cpu = [_cpu_ms(sp.get("resources") or {}) for sp in hooks]
+        return {
+            "session_id": str(session_id),
+            "sort_by": sort_by,
+            "total_spans": len(pool),
+            "returned": min(limit, len(ranked)),
+            "truncated": len(ranked) > limit,
+            "spans": [compact_span(sp) for sp in ranked[:limit]],
+            "agent_self": compact_span(s.get("agent_self") or {}),
+            "resource_totals": s.get("resource_totals"),
+            "io_bytes_source": s.get("io_bytes_source"),
+            "reconciliation": s.get("tool_span_reconciliation"),
+            "agent_process": s.get("agent_process"),
+            "repeated": repeated_spans(pool),
+            "hook_overhead": {
+                "spans": len(hooks),
+                "total_wall_ms": hook_wall,
+                "total_cpu_ms": sum(c for c in hook_cpu if c is not None) if any(c is not None for c in hook_cpu) else None,
+            },
+            "harness": rep.get("harness"),
+        }
+    result = _no_session("get_tool_spans", session_id)
+    result["known_session_ids"] = [str(s.get("session_id")) for s in rep.get("sessions", [])]
+    return result
+
+
+def get_span(
+    capture: Path | str,
+    span_id: str,
+    spans: Path | str | None = None,
+    agent_process: str | None = None,
+    binary: Path | str | None = None,
+) -> dict:
+    """Full detail for one span (or an agent_self-N bucket): resources,
+    argv/command, tool input summary, top files and destinations, notes."""
+    rep = _spans_report(capture, spans, agent_process, binary)
+    known = []
+    for s in rep.get("sessions", []):
+        cands = list(s.get("tool_spans") or [])
+        if s.get("agent_self"):
+            cands.append(s["agent_self"])
+        for sp in cands:
+            known.append(sp.get("span_id"))
+            if sp.get("span_id") == span_id:
+                out = dict(sp)
+                out["session_id"] = str(s.get("session_id"))
+                out["io_bytes_source"] = s.get("io_bytes_source")
+                return out
+    return {
+        "error": f"no span {span_id!r} in this capture",
+        "hint": "use span_id values from get_tool_spans or the report's tool_spans",
+        "known_span_ids_sample": known[:40],
+    }
+
+
 # ---- Anthropic tool schemas + dispatcher ----
 
 TOOL_SCHEMAS = [
@@ -444,6 +670,45 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_tool_spans",
+        "description": (
+            "Per-tool-call spans for a session, costliest first. Each span is "
+            "one tool call: a child-process subtree of the agent "
+            "(source process_tree), merged with the harness hook record "
+            "when present (harness+process_tree: tool_name + input), or a "
+            "harness call with no child process whose resources are the "
+            "agent's own events in that time window (attribution "
+            "time_window: approximate, no CPU). Also returns agent_self "
+            "(the agent process's own work), resource_totals, the "
+            "reconciliation check, repeated identical spans (candidate "
+            "waste), and hook overhead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": ["integer", "string"], "description": "Exact session_id digits from the report; pass through verbatim, do not round or reformat."},
+                "sort_by": {"type": "string", "enum": list(SPAN_SORTS), "default": "wall"},
+                "limit": {"type": "integer", "default": MAX_SPANS},
+                "include_hooks": {"type": "boolean", "default": False},
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "get_span",
+        "description": (
+            "Full detail for one span_id (or agent_self-N): resources "
+            "(null = not collected), argv/command, tool input summary, "
+            "top files with byte counts, top network destinations with "
+            "hostnames, parallel_with, notes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"span_id": {"type": "string"}},
+            "required": ["span_id"],
+        },
+    },
+    {
         "name": "network_activity",
         "description": (
             "Network connects plus send/recv transfers in a session: "
@@ -465,11 +730,33 @@ _DISPATCH = {
     "find_repeated_commands": find_repeated_commands,
     "files_opened": files_opened,
     "network_activity": network_activity,
+    "get_tool_spans": get_tool_spans,
+    "get_span": get_span,
 }
 
+_SPAN_TOOLS = frozenset({"get_tool_spans", "get_span"})
 
-def call_tool(capture: Path | str, name: str, args: dict) -> str:
-    """Run one tool call and return its compact JSON string result."""
+
+def call_tool(
+    capture: Path | str,
+    name: str,
+    args: dict,
+    spans: Path | str | None = None,
+    agent_process: str | None = None,
+    binary: Path | str | None = None,
+) -> str:
+    """Run one tool call and return its compact JSON string result.
+
+    spans / agent_process are pipeline options (the harness spans file
+    and --agent-process), passed to the span tools only; the model never
+    supplies them.
+    """
     fn = _DISPATCH[name]
-    result = fn(capture, **args)
+    args = dict(args or {})
+    if name in _SPAN_TOOLS:
+        for k in ("spans", "agent_process", "binary"):
+            args.pop(k, None)
+        result = fn(capture, spans=spans, agent_process=agent_process, binary=binary, **args)
+    else:
+        result = fn(capture, **args)
     return json.dumps(result)[:20_000]

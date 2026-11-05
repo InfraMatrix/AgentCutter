@@ -39,15 +39,35 @@ LIST_CAPS = {
     "program_syscall_attribution": 50,
 }
 
+# Tool spans sent to the model: the costliest by wall time and by CPU
+# (union), kept in start order. The tools see every span.
+MAX_TOOL_SPANS = 40
+# Per-span detail lists trimmed in the model message (get_span has all).
+SPAN_DETAIL_CAPS = {"top_files": 3, "top_destinations": 3, "pids": 10, "mutated_paths": 5}
+
 
 def load_system_prompt(path: Path | str = PROMPT_PATH) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def run_timeline(capture: Path, binary: Path | str = BIN_PATH) -> dict:
-    """Run `loupe-timeline --json capture` and return the parsed report."""
+def run_timeline(
+    capture: Path,
+    binary: Path | str = BIN_PATH,
+    spans: Path | str | None = None,
+    agent_process: str | None = None,
+) -> dict:
+    """Run `loupe-timeline --json capture` and return the parsed report.
+
+    spans: harness hook file (default: the reducer auto-detects
+    <capture>.spans.jsonl). agent_process: --agent-process override.
+    """
+    cmd = [str(binary), "--json"]
+    if spans:
+        cmd += ["--spans", str(spans)]
+    if agent_process:
+        cmd += ["--agent-process", agent_process]
     proc = subprocess.run(
-        [str(binary), "--json", str(capture)],
+        cmd + [str(capture)],
         capture_output=True,
         text=True,
         check=False,
@@ -207,20 +227,99 @@ def _trim_markers(markers: list, cap: int) -> tuple[list, str]:
     return kept, note
 
 
+def _span_cpu(sp: dict) -> int:
+    res = sp.get("resources") or {}
+    return (res.get("cpu_user_ms") or 0) + (res.get("cpu_sys_ms") or 0)
+
+
+def annotate_tool_spans(report: dict) -> dict:
+    """Add deterministic span summaries the analysis prompt relies on.
+
+    session["repeated_tool_spans"]: identical spans (same tool + argv or
+    command) run more than once — candidate waste, computed here so the
+    model does not have to count. session["hook_overhead"]: the
+    AgentLoupe hook's own processes (excluded from rankings).
+    Additive and idempotent; computed on the full span list before trim.
+    """
+    from agentcutter.capture_tools import repeated_spans
+
+    for session in report.get("sessions", []):
+        spans = session.get("tool_spans")
+        if spans is None:
+            continue
+        if "repeated_tool_spans" not in session:
+            session["repeated_tool_spans"] = repeated_spans(spans)
+        if "hook_overhead" not in session:
+            hooks = [sp for sp in spans if sp.get("role") == "hook"]
+            session["hook_overhead"] = {
+                "spans": len(hooks),
+                "total_wall_ms": sum(sp.get("wall_ms") or 0 for sp in hooks),
+                "total_cpu_ms": sum(_span_cpu(sp) for sp in hooks),
+            }
+    return report
+
+
+def trim_tool_spans(report: dict, max_spans: int = MAX_TOOL_SPANS) -> dict:
+    """Keep the costliest spans (top by wall_ms and top by CPU, union, hook
+    spans dropped first) in start order; thin per-span detail lists.
+    Records what was cut in session["trimmed"]["tool_spans"]."""
+    notes = report.setdefault("notes", [])
+    for session in report.get("sessions", []):
+        spans = session.get("tool_spans")
+        if not spans:
+            continue
+        for sp in spans + ([session["agent_self"]] if session.get("agent_self") else []):
+            for field, cap in SPAN_DETAIL_CAPS.items():
+                v = sp.get(field)
+                if isinstance(v, list) and len(v) > cap:
+                    sp[field] = v[:cap]
+                    sp.setdefault("trimmed_detail", {})[field] = len(v)
+        if len(spans) <= max_spans:
+            continue
+        work = [sp for sp in spans if sp.get("role") != "hook"]
+        half = max_spans // 2
+        by_wall = sorted(work, key=lambda sp: -(sp.get("wall_ms") or 0))[:half]
+        by_cpu = sorted(work, key=lambda sp: -_span_cpu(sp))[:max_spans]
+        keep = {id(sp) for sp in by_wall}
+        for sp in by_cpu:
+            if len(keep) >= max_spans:
+                break
+            keep.add(id(sp))
+        kept = [sp for sp in spans if id(sp) in keep]
+        dropped = len(spans) - len(kept)
+        session["tool_spans"] = kept
+        session.setdefault("trimmed", {})["tool_spans"] = {
+            "total": len(spans),
+            "kept": len(kept),
+            "dropped": dropped,
+            "policy": f"top {half} by wall_ms + top by cpu up to {max_spans}, hook spans dropped first; get_tool_spans lists all",
+        }
+        notes.append(
+            f"session {session.get('session_id')}: tool_spans trimmed to {len(kept)} "
+            f"of {len(spans)} (costliest by wall/cpu kept; use get_tool_spans for all)"
+        )
+    return report
+
+
 def build_report(
     capture: Path,
     out: Path | None = None,
     binary: Path | str = BIN_PATH,
     max_processes: int = 100,
     max_markers: int = 500,
+    spans: Path | str | None = None,
+    agent_process: str | None = None,
+    max_tool_spans: int = MAX_TOOL_SPANS,
 ) -> tuple[dict, Path]:
     """Full reduction step. Returns (report, report_path)."""
     capture = Path(capture)
-    report = run_timeline(capture, binary)
+    report = run_timeline(capture, binary, spans=spans, agent_process=agent_process)
     normalize_report_ids(report)
     add_syscalls_total(report)
     strip_series(report)
+    annotate_tool_spans(report)
     trim_report(report, max_processes, max_markers)
+    trim_tool_spans(report, max_tool_spans)
     out = out or capture.parent / (capture.name.removesuffix(".jsonl") + ".report.json")
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report, out
