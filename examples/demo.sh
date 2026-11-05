@@ -48,13 +48,17 @@ agents:
       interpreter: $PY
       argv_contains: agentcutter-demo
 EOF
-# --enable-file-rw-events + --enable-net-send-events so the analysis can
-# show per-call byte counts, send/recv volume, and hostnames (empty on
-# loopback, which the analysis should say rather than guess about).
+# --enable-io-accounting (cumulative per-open byte totals on file_close;
+# without it file_close read_bytes/write_bytes stay 0 even when per-call
+# file_read/file_write events flow) + --enable-file-rw-events +
+# --enable-net-send-events so the analysis can show per-call byte counts,
+# send/recv volume, and hostnames (empty on loopback, which the analysis
+# should say rather than guess about).
 sudo "$LOUPE_DIR/agentloupe" \
   --config "$STAGE/agents.yaml" \
   --bpf-object "$LOUPE_DIR/bpf/agentloupe.bpf.o" \
   --enable-syscall-summary --syscall-interval 500ms \
+  --enable-io-accounting \
   --enable-file-rw-events --enable-net-send-events \
   --max-runtime 55s --output "$OUT" &
 LOADER=$!

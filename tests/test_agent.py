@@ -48,17 +48,21 @@ def test_loop_calls_tool_and_returns_text(monkeypatch):
             out=pathlib.Path(d) / "r.json",
             binary=BIN,
         )
+    assert sorted(s["session_id"] for s in report["sessions"]) == ["100", "200"]
     fake = _install_fake(monkeypatch)
     text = agent_mod.run_analysis(
         report, "system prompt", fixture("timeline_basic.jsonl"), max_turns=5
     )
-    assert text == "FINAL ANALYSIS"
-    assert len(fake.calls) == 2
+    # two sessions -> two per-session threads plus a summary-only comparison
+    assert len(fake.calls) == 4
+    assert "## Session 100" in text and "## Session 200" in text
+    assert "## Cross-session comparison" in text
+    assert "FINAL ANALYSIS" in text
     first = fake.calls[0]
     assert first["model"] == agent_mod.MODEL
     assert first["system"] == "system prompt"
     assert first["tools"]  # schemas passed
-    # second call carried the tool_result back
+    # the per-session tool call carried the tool_result back
     contents = fake.calls[1]["messages"][-1]["content"]
     assert contents[0]["type"] == "tool_result"
 
@@ -88,6 +92,103 @@ def test_continuation_on_max_tokens(monkeypatch):
     )
     assert text == "PART1 PART2"
     assert calls["n"] == 2
+
+
+def test_per_session_calls_keep_all_sections(monkeypatch):
+    """3 large sessions -> 3 complete analyses + 1 summary-only comparison."""
+    from agentcutter import pipeline
+
+    def big_session(sid):
+        return {
+            "session_id": sid, "agent": "a", "duration_ms": 100,
+            "events": 600, "marker_total": 600,
+            "processes": [{"pid": 1, "duration_ms": 100}],
+            "markers": [
+                {"ts": "t", "offset_ms": i, "type": "file_open",
+                 "pid": 1, "detail": f"/f{i}"} for i in range(600)
+            ],
+            "top_programs_by_exec_count": [], "top_programs_by_wall_time": [],
+            "syscall_distribution": [{"name": "read"}],
+            "syscall_categories": [{"name": "file"}],
+            "notable_syscalls": [{"name": "execve"}],
+            "first_seen_syscalls": [{"name": "read"}],
+            "files_touched": [{"path": "/f", "count": 1}],
+            "network_destinations": [{"dest": "127.0.0.1:53"}],
+            "program_syscall_attribution": [],
+        }
+
+    report = {"notes": [], "sessions": [big_session("s1"), big_session("s2"),
+                                       big_session("s3")]}
+    pipeline.trim_report(report, max_markers=100)
+
+    sent_messages = []
+
+    class PerSession:
+        def __init__(self):
+            self.n = 0
+
+        def create(self, **kwargs):
+            self.n += 1
+            sent_messages.append(kwargs["messages"])
+            tag = f"ANALYSIS-{self.n}"
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=tag)],
+                stop_reason="end_turn",
+            )
+
+    fake = PerSession()
+    monkeypatch.setattr(
+        agent_mod, "get_client", lambda: SimpleNamespace(messages=fake)
+    )
+    text = agent_mod.run_analysis(
+        report, "system prompt", fixture("timeline_basic.jsonl"), max_turns=3
+    )
+    # 3 per-session analyses plus one cross-session comparison call
+    assert fake.n == 4
+    for sid in ("s1", "s2", "s3"):
+        assert f"## Session {sid}" in text
+    assert "## Cross-session comparison" in text
+    # each per-session message carries every top-level section + trimmed
+    required = ["processes", "markers", "syscall_distribution",
+                "syscall_categories", "notable_syscalls",
+                "first_seen_syscalls", "files_touched",
+                "network_destinations", "program_syscall_attribution",
+                "trimmed"]
+    for msgs in sent_messages[:3]:
+        body = msgs[0]["content"]
+        for field in required:
+            assert field in body, field
+    # the comparison call carries summaries only, never raw markers
+    compare_body = sent_messages[3][0]["content"]
+    assert "ANALYSIS-" in compare_body and "file_open" not in compare_body
+
+
+def test_inventory_labels_marker_events_with_syscall_denominator():
+    """Inventory names both bases: marker events vs syscalls, never bare 'events'.
+
+    Regression: the session header said "273 events" while category
+    percentages divided by the 1535-syscall total, so the model mixed
+    the bases. Both labels now travel with the numbers.
+    """
+    report = {
+        "sessions": [
+            {"session_id": "7", "agent": "a", "duration_ms": 10,
+             "events": 273,
+             "syscall_distribution": [{"name": "read", "count": 1000},
+                                      {"name": "write", "count": 535}],
+             "processes": [1], "markers": [1, 2]},
+        ]
+    }
+    msg = agent_mod.build_first_message(report, char_cap=5000)
+    assert "273 marker events" in msg
+    assert "1535 syscalls" in msg
+    # annotated total wins over summing the table
+    report["sessions"][0]["syscalls_total"] = 1535
+    report["sessions"][0]["syscall_distribution"] = []
+    msg2 = agent_mod.build_first_message(report, char_cap=5000)
+    assert "1535 syscalls" in msg2
+    assert agent_mod._session_summary_line(report["sessions"][0]).count(
+        "marker events") == 1
 
 
 def test_inventory_survives_truncation():
@@ -164,3 +265,5 @@ def test_dry_run_analysis_exercises_tools():
         )
     text = dry_run_analysis(report, fixture("timeline_multi_agent.jsonl"))
     assert "Session 300" in text and "Session 400" in text
+    # session headers carry both bases, never a bare "N events" count
+    assert "marker events" in text and "syscalls" in text
