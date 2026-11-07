@@ -1,7 +1,8 @@
-"""Muse Spark analysis agent: fixed-turn tool-use loop over the capture tools.
+"""Analysis agent: fixed-turn tool-use loop over the capture tools.
 
-Endpoint/auth/model per CLAUDE.md: Anthropic Messages API format at
-https://api.meta.ai, Bearer $META_MODEL_API_KEY, model muse-spark-1.3.
+Speaks the Messages API. Which service, key and model it uses is chosen at
+run time from what is available (agentcutter.session); MODEL/BASE_URL below
+are only defaults for library callers that pass nothing.
 """
 
 from __future__ import annotations
@@ -20,14 +21,21 @@ REPORT_CHAR_CAP = 60_000
 CONTINUE_PROMPT = "Continue exactly where you left off, with no repetition."
 
 
-def get_client():
-    """Build the Anthropic SDK client (imported lazily for test mocking)."""
+def get_client(api_key: str | None = None, base_url: str = BASE_URL, auth: str = "bearer"):
+    """Build a Messages-API client (SDK imported lazily for test mocking).
+
+    The CLI passes the credentials chosen in agentcutter.session: the key,
+    its service's base_url, and how that service takes keys ("bearer" or
+    "x-api-key"). Without a key, META_MODEL_API_KEY is used (library use).
+    """
     from anthropic import Anthropic
 
-    api_key = os.environ.get("META_MODEL_API_KEY")
+    api_key = api_key or os.environ.get("META_MODEL_API_KEY")
     if not api_key:
-        raise RuntimeError("META_MODEL_API_KEY is not set")
-    return Anthropic(base_url=BASE_URL, auth_token=api_key)
+        raise RuntimeError("no API key given (choose one with `agentcutter session pick`)")
+    if auth == "x-api-key":
+        return Anthropic(base_url=base_url, api_key=api_key, auth_token=None)
+    return Anthropic(base_url=base_url, auth_token=api_key, api_key=None)
 
 
 def _syscalls_total(session: dict) -> int:
@@ -156,13 +164,13 @@ def build_session_message(
 
 
 def _run_tool_loop(client, system_prompt: str, messages: list, capture, max_turns: int,
-                   tool_opts: dict | None = None) -> str:
+                   tool_opts: dict | None = None, model: str = MODEL) -> str:
     """Run the tool-use loop for one message thread; return its final text."""
     parts: list[str] = []
     resp = None
     for _ in range(max_turns):
         resp = client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=MAX_OUTPUT_TOKENS,
             system=system_prompt,
             messages=messages,
@@ -218,11 +226,15 @@ def run_analysis(
     capture: Path | str,
     max_turns: int = MAX_TURNS,
     tool_opts: dict | None = None,
+    client=None,
+    model: str = MODEL,
 ) -> str:
     """Analyze each session in its own model call, then compare summaries.
 
     tool_opts (spans / agent_process / binary) are pipeline options for
-    the span tools; the model never supplies them.
+    the span tools; the model never supplies them. client/model come from
+    the chosen analysis session (agentcutter.session); without a client,
+    get_client() falls back to META_MODEL_API_KEY.
 
     One message thread per session keeps a large capture from truncating
     whole sessions (or their later sections) out of a single context
@@ -231,19 +243,21 @@ def run_analysis(
     """
     if max_turns < 1:
         raise ValueError("max_turns must be >= 1")
-    client = get_client()
+    client = client or get_client()
     sessions = report.get("sessions", [])
     if not sessions:
         # No sessions: fall back to the legacy single message.
         messages: list[dict] = [{"role": "user", "content": build_first_message(report)}]
-        return _run_tool_loop(client, system_prompt, messages, capture, max_turns, tool_opts)
+        return _run_tool_loop(client, system_prompt, messages, capture, max_turns, tool_opts,
+                              model=model)
     sections: list[str] = []
     summaries: list[str] = []
     for session in sessions:
         messages = [
             {"role": "user", "content": build_session_message(session, report)}
         ]
-        text = _run_tool_loop(client, system_prompt, messages, capture, max_turns, tool_opts)
+        text = _run_tool_loop(client, system_prompt, messages, capture, max_turns, tool_opts,
+                              model=model)
         sections.append(
             f"## Session {session.get('session_id')} "
             f"({session.get('agent')})\n\n{text}"
@@ -266,7 +280,8 @@ def run_analysis(
             }
         ]
         comparison = _run_tool_loop(
-            client, system_prompt, compare_messages, capture, max_turns, tool_opts
+            client, system_prompt, compare_messages, capture, max_turns, tool_opts,
+            model=model,
         )
         sections.append("## Cross-session comparison\n\n" + comparison)
     return "\n\n".join(sections)

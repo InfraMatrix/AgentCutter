@@ -48,14 +48,39 @@ It rebuilds `bin/loupe-timeline` (and `bin/loupe-scorecard`) when missing
 or stale, runs the loader for ~55s with `--enable-syscall-summary` plus
 `--enable-file-rw-events` and `--enable-net-send-events` while the
 workload runs twice, prints the scorecard and the `loupe-timeline`
-summary, then the AgentCutter analysis (real Muse Spark call if
-`META_MODEL_API_KEY` is set, `--dry-run` otherwise). Outputs land
-in `/tmp/ac-demo/`. `LOUPE_DIR` overrides the AgentLoupe checkout location.
+summary, then the AgentCutter analysis. Outputs land in `/tmp/ac-demo/`.
+`LOUPE_DIR` overrides the AgentLoupe checkout location.
 
-Note: `live-capture.jsonl` was taken with `--enable-syscall-summary` only,
-so it holds no `file_read`/`file_write`/`net_send`/`net_recv` events —
-byte/hostname fields are absent there and the analysis says so. Fresh
-`demo.sh` captures include them.
+Before anything is built or captured, the demo shows which credentials
+and model the analysis will use and asks whether they are right;
+answering no stops it and prints how to set the ones you want. With no
+analysis credentials at all it says so and the analysis is a `--dry-run`.
+
+## Analysis credentials and model
+
+Nothing is assumed about which service, key or model you have. AgentCutter
+discovers what is available, environment variables ending in `_API_KEY` /
+`_AUTH_TOKEN` (except AgentLoupe's coding-agent `AGENT_*`) and key files in
+`~/.config/agentcutter/model-credentials/<name>.key`, works out which
+service each key belongs to (from its format or name, or a `provider=` /
+`base_url=` line in the key file), and lists the rest as unusable with how
+to fix them. A key is only ever sent to its own service. Once credentials
+are chosen, the models come from that service's `/v1/models`; if it cannot
+list them, you type an id.
+
+```sh
+agentcutter session list    # credentials found, and which service each is for
+agentcutter session pick    # choose credentials + model, save (ids only, no key)
+agentcutter session show    # the choice that would be used, and the models offered
+agentcutter session check   # test it with a 1-token request
+```
+
+`agentcutter analyze` uses `--auth`/`--model` (or `AGENTCUTTER_AUTH` /
+`AGENTCUTTER_MODEL`), else the saved choice if still available, else the
+only option or a menu, then asks before the analysis runs (`--yes` or
+`AGENTCUTTER_CONFIRM=1` skips the question; without a terminal one of them
+is required). A rejected key or unknown model is reported in plain words
+with the same how-to. Keys are never printed, not even in part.
 
 ## Tool spans
 

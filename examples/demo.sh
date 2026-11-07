@@ -7,8 +7,12 @@
 #
 # Env:
 #   LOUPE_DIR  AgentLoupe checkout (default: <agentcutter>/../AgentLoupe)
-#   META_MODEL_API_KEY  if set, runs the real Muse Spark analysis;
-#                       otherwise runs --dry-run (no API call).
+#   Analysis credentials + model: chosen and confirmed FIRST, before the
+#   build or capture (`agentcutter session confirm`): AGENTCUTTER_AUTH /
+#   AGENTCUTTER_MODEL / AGENTCUTTER_API_KEY_FILE, else the choice saved by
+#   `agentcutter session pick`, else a menu. Answering no stops the demo
+#   and prints how to set the ones you want. With no credentials at all
+#   (nothing usable found) the analysis is a --dry-run.
 set -euo pipefail
 
 ACUTTER="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,6 +21,27 @@ STAGE=/tmp/ac-demo
 mkdir -p "$STAGE"
 OUT=$STAGE/demo-capture.jsonl
 PY=$(readlink -f "$(command -v python3)")
+CUTTER="$ACUTTER/.venv/bin/agentcutter"
+[ -x "$CUTTER" ] || CUTTER="agentcutter"
+
+echo "== 0/4 analysis credentials and model (AgentCutter)"
+set +e
+AC_CHOICE="$("$CUTTER" session confirm --rerun "bash examples/demo.sh")"
+AC_RC=$?
+set -e
+case "$AC_RC" in
+  0)
+    ANALYSIS=real
+    # Hand the confirmed choice to step 4 (ids only; parsed, never eval'd).
+    while IFS='=' read -r k v; do
+      case "$k" in
+        AGENTCUTTER_AUTH|AGENTCUTTER_MODEL|AGENTCUTTER_API_KEY_FILE) export "$k=$v" ;;
+      esac
+    done <<<"$AC_CHOICE"
+    ;;
+  3) ANALYSIS=dry; echo "(no analysis credentials: step 4 will be a dry run, no API call)" ;;
+  *) exit 1 ;;
+esac
 
 build_tool() {
   # $1 = cmd dir, $2 = output binary. Rebuild when missing or stale.
@@ -77,21 +102,19 @@ if [ ! -s "$OUT" ]; then
   exit 1
 fi
 
-CUTTER="$ACUTTER/.venv/bin/agentcutter"
-[ -x "$CUTTER" ] || CUTTER="agentcutter"
-
 echo "== 3/4 scorecard + timeline summary"
 "$ACUTTER/bin/loupe-scorecard" "$OUT"
 "$ACUTTER/bin/loupe-timeline" "$OUT" | head -30
 
 echo "== 4/4 AgentCutter analysis"
-if [ -z "${META_MODEL_API_KEY:-}" ]; then
-  echo "(no META_MODEL_API_KEY: dry run, no API call)"
+if [ "$ANALYSIS" = dry ]; then
+  echo "(no analysis credentials: dry run, no API call)"
   "$CUTTER" analyze "$OUT" --dry-run \
     --report "$STAGE/demo-capture.report.json" \
     --output "$STAGE/demo-capture.analysis.md"
 else
-  "$CUTTER" analyze "$OUT" \
+  # Already confirmed in step 0; the exported AGENTCUTTER_* pick the same choice.
+  "$CUTTER" analyze "$OUT" --yes \
     --report "$STAGE/demo-capture.report.json" \
     --output "$STAGE/demo-capture.analysis.md"
 fi
