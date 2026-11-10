@@ -77,7 +77,7 @@ def build_first_message(report: dict, char_cap: int = REPORT_CHAR_CAP) -> str:
     if truncated:
         text = text[:char_cap] + "\n... [truncated for context size]"
     return (
-        "Here is the trimmed loupe-timeline report for this capture "
+        "Here is the trimmed forkline-timeline report for this capture "
         "(syscall_series stripped; processes/markers may be trimmed, see notes). "
         "Analyze it per your system prompt. Every number you cite must come "
         "from this report or from the verification tools.\n\n"
@@ -154,7 +154,7 @@ def build_session_message(
         if len(text) > char_cap:
             text = text[:char_cap] + "\n... [truncated for context size]"
     return (
-        "Analyze ONLY this one session from the loupe-timeline report "
+        "Analyze ONLY this one session from the forkline-timeline report "
         "(syscall_series stripped; lists may be trimmed — session[\"trimmed\"] "
         "and session_notes say exactly what was cut). Every number you cite "
         "must come from this message or from the verification tools "

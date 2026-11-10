@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentcutter"
 version = "0.1.0"
-description = "AgentLoupe inspects, AgentCutter cuts: explain agent captures with Muse Spark."
+description = "Forkline inspects, AgentCutter cuts: explain agent captures with Muse Spark."
 requires-python = ">=3.10"
 dependencies = ["anthropic>=0.40"]
 

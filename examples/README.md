@@ -1,12 +1,12 @@
 # Examples: live-kernel capture + AgentCutter analysis
 
-`live-capture.jsonl` is a real AgentLoupe capture from the host kernel
+`live-capture.jsonl` is a real Forkline capture from the host kernel
 (7.0.0-42-generic, LSM mode), produced 2026-11-01 to show AgentCutter
 working on non-synthetic data.
 
 ## Provenance
 
-- `sudo make integration` in `../AgentLoupe`: all 4 tests PASS
+- `sudo make integration` in `../forkline`: all 4 tests PASS
   (`TestIntegrationLoaderObserveOnly`, `TestIntegrationMultiAgentConcurrent`,
   `TestIntegrationOrphanedChild`, `TestIntegrationAdoption`), zero
   ring-buffer drops, zero map-full counters, no BPF leaks.
@@ -44,12 +44,12 @@ the TTY), from the repo root:
 bash examples/demo.sh
 ```
 
-It rebuilds `bin/loupe-timeline` (and `bin/loupe-scorecard`) when missing
+It rebuilds `bin/forkline-timeline` (and `bin/forkline-scorecard`) when missing
 or stale, runs the loader for ~55s with `--enable-syscall-summary` plus
 `--enable-file-rw-events` and `--enable-net-send-events` while the
-workload runs twice, prints the scorecard and the `loupe-timeline`
+workload runs twice, prints the scorecard and the `forkline-timeline`
 summary, then the AgentCutter analysis. Outputs land in `/tmp/ac-demo/`.
-`LOUPE_DIR` overrides the AgentLoupe checkout location.
+`FORKLINE_DIR` overrides the Forkline checkout location.
 
 Before anything is built or captured, the demo shows which credentials
 and model the analysis will use and asks whether they are right;
@@ -60,7 +60,7 @@ analysis credentials at all it says so and the analysis is a `--dry-run`.
 
 Nothing is assumed about which service, key or model you have. AgentCutter
 discovers what is available, environment variables ending in `_API_KEY` /
-`_AUTH_TOKEN` (except AgentLoupe's coding-agent `AGENT_*`) and key files in
+`_AUTH_TOKEN` (except Forkline's coding-agent `AGENT_*`) and key files in
 `~/.config/agentcutter/model-credentials/<name>.key`, works out which
 service each key belongs to (from its format or name, or a `provider=` /
 `base_url=` line in the key file), and lists the rest as unusable with how
@@ -84,13 +84,13 @@ with the same how-to. Keys are never printed, not even in part.
 
 ## Tool spans
 
-`agentcutter analyze` reports per-tool-call spans (AgentLoupe
-`loupe-timeline` `tool_spans`) and the analysis ranks tool calls by wall
-time and resources. With a Claude Code hook file (AgentLoupe
-`hooks/agentloupe_hook.py`) saved as `<capture>.spans.jsonl`, or passed
+`agentcutter analyze` reports per-tool-call spans (Forkline
+`forkline-timeline` `tool_spans`) and the analysis ranks tool calls by wall
+time and resources. With a Claude Code hook file (Forkline
+`hooks/forkline_hook.py`) saved as `<capture>.spans.jsonl`, or passed
 with `--spans`, spans carry tool names and inputs. `--agent-process NAME`
 re-roots spans for agents started through a wrapper. The tools
 `get_tool_spans(session_id, sort_by=wall|cpu|read_bytes|net)` and
 `get_span(span_id)` give the model every span, not just the trimmed top.
-A real Claude Code run with hooks is canned in AgentLoupe
+A real Claude Code run with hooks is canned in Forkline
 `examples/canned/` (`make demo-canned` there).

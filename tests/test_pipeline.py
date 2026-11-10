@@ -1,4 +1,4 @@
-"""Pipeline tests against AgentLoupe fixtures (no API)."""
+"""Pipeline tests against Forkline fixtures (no API)."""
 
 import json
 

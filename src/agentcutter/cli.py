@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentcutter")
     sub = parser.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("analyze", help="Analyze a capture into markdown.")
-    a.add_argument("capture", type=Path, help="Raw AgentLoupe JSONL capture.")
+    a.add_argument("capture", type=Path, help="Raw Forkline JSONL capture.")
     a.add_argument("--output", type=Path, default=None)
     a.add_argument("--report", type=Path, default=None,
                    help="Where to write report.json (default: next to capture).")

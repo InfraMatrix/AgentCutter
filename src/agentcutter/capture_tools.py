@@ -383,7 +383,7 @@ def network_activity(capture: Path | str, session_id: int | str) -> dict:
     return result
 
 
-# ---- tool spans (from the reducer's tool_spans; see AgentLoupe README) ----
+# ---- tool spans (from the reducer's tool_spans; see Forkline README) ----
 
 MAX_SPANS = 50
 SPAN_SORTS = ("wall", "cpu", "read_bytes", "net")
@@ -394,7 +394,7 @@ def _spans_report(capture: Path | str, spans: Path | str | None = None,
                   agent_process: str | None = None, binary: Path | str | None = None) -> dict:
     """The full (untrimmed) reducer report, cached per capture/spans file.
 
-    Tool spans are computed by loupe-timeline (process tree + optional
+    Tool spans are computed by forkline-timeline (process tree + optional
     harness hook file), not re-derived here, so every number matches the
     report the model was given.
     """
