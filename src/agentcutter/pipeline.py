@@ -1,4 +1,4 @@
-"""Step 1-3 of the pipeline: capture.jsonl -> loupe-timeline --json -> report.json.
+"""Step 1-3 of the pipeline: capture.jsonl -> forkline-timeline --json -> report.json.
 
 Strips the large, low-value syscall_series fields and optionally trims
 processes/markers so the report fits the model context. Every number kept
@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 PKG_ROOT = Path(__file__).resolve().parents[2]
-BIN_PATH = PKG_ROOT / "bin" / "loupe-timeline"
+BIN_PATH = PKG_ROOT / "bin" / "forkline-timeline"
 PROMPT_PATH = PKG_ROOT / "prompts" / "analyze.md"
 
 SERIES_FIELDS = ("syscall_series", "syscall_series_by_category")
@@ -56,7 +56,7 @@ def run_timeline(
     spans: Path | str | None = None,
     agent_process: str | None = None,
 ) -> dict:
-    """Run `loupe-timeline --json capture` and return the parsed report.
+    """Run `forkline-timeline --json capture` and return the parsed report.
 
     spans: harness hook file (default: the reducer auto-detects
     <capture>.spans.jsonl). agent_process: --agent-process override.
@@ -73,14 +73,14 @@ def run_timeline(
         check=False,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"loupe-timeline failed: {proc.stderr.strip()}")
+        raise RuntimeError(f"forkline-timeline failed: {proc.stderr.strip()}")
     return json.loads(proc.stdout)
 
 
 def normalize_report_ids(report: dict) -> dict:
     """Stringify 64-bit IDs so JSON keeps full precision.
 
-    loupe-timeline emits session_id as a JSON number; IDs past 2**53
+    forkline-timeline emits session_id as a JSON number; IDs past 2**53
     lose precision in JS-float consumers (the model), which then passes
     a rounded value back to the tools and matches nothing. Python ints
     are exact, so convert here, right after json.loads, before the
@@ -238,7 +238,7 @@ def annotate_tool_spans(report: dict) -> dict:
     session["repeated_tool_spans"]: identical spans (same tool + argv or
     command) run more than once — candidate waste, computed here so the
     model does not have to count. session["hook_overhead"]: the
-    AgentLoupe hook's own processes (excluded from rankings).
+    Forkline hook's own processes (excluded from rankings).
     Additive and idempotent; computed on the full span list before trim.
     """
     from agentcutter.capture_tools import repeated_spans

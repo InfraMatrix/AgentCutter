@@ -1,12 +1,12 @@
 #!/bin/bash
-# Live demo: capture a real agent workload with AgentLoupe, analyze it
+# Live demo: capture a real agent workload with Forkline, analyze it
 # with AgentCutter, print the analysis. End to end on the host kernel.
 #
 # Run in a real terminal (sudo needs the TTY), from anywhere:
 #   bash examples/demo.sh
 #
 # Env:
-#   LOUPE_DIR  AgentLoupe checkout (default: <agentcutter>/../AgentLoupe)
+#   FORKLINE_DIR  Forkline checkout (default: <agentcutter>/../forkline)
 #   Analysis credentials + model: chosen and confirmed FIRST, before the
 #   build or capture (`agentcutter session confirm`): AGENTCUTTER_AUTH /
 #   AGENTCUTTER_MODEL / AGENTCUTTER_API_KEY_FILE, else the choice saved by
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ACUTTER="$(cd "$(dirname "$0")/.." && pwd)"
-LOUPE_DIR="${LOUPE_DIR:-$(cd "$ACUTTER/../AgentLoupe" && pwd)}"
+FORKLINE_DIR="${FORKLINE_DIR:-$(cd "$ACUTTER/../forkline" && pwd)}"
 STAGE=/tmp/ac-demo
 mkdir -p "$STAGE"
 OUT=$STAGE/demo-capture.jsonl
@@ -45,23 +45,23 @@ esac
 
 build_tool() {
   # $1 = cmd dir, $2 = output binary. Rebuild when missing or stale.
-  if [ ! -x "$2" ] || [ "$LOUPE_DIR/cmd/$1/main.go" -nt "$2" ]; then
-    (cd "$LOUPE_DIR" && go build -buildvcs=false -o "$2" "./cmd/$1")
+  if [ ! -x "$2" ] || [ "$FORKLINE_DIR/cmd/$1/main.go" -nt "$2" ]; then
+    (cd "$FORKLINE_DIR" && go build -buildvcs=false -o "$2" "./cmd/$1")
   fi
 }
 
-echo "== 1/4 build loader + loupe-timeline + loupe-scorecard"
-# The loader binary must match the BPF object (ABI): a stale agentloupe
+echo "== 1/4 build loader + forkline-timeline + forkline-scorecard"
+# The loader binary must match the BPF object (ABI): a stale forkline
 # decodes nothing ("abi version X, want Y" in the loader output) and the
 # capture comes out empty even though kernel counters show events flowing.
-if [ ! -x "$LOUPE_DIR/agentloupe" ] \
-  || [ "$LOUPE_DIR/cmd/agentloupe/main.go" -nt "$LOUPE_DIR/agentloupe" ] \
-  || [ "$LOUPE_DIR/bpf/agentloupe.bpf.c" -nt "$LOUPE_DIR/agentloupe" ] \
-  || [ "$LOUPE_DIR/bpf/agentloupe.h" -nt "$LOUPE_DIR/agentloupe" ]; then
-  make -C "$LOUPE_DIR" build
+if [ ! -x "$FORKLINE_DIR/forkline" ] \
+  || [ "$FORKLINE_DIR/cmd/forkline/main.go" -nt "$FORKLINE_DIR/forkline" ] \
+  || [ "$FORKLINE_DIR/bpf/forkline.bpf.c" -nt "$FORKLINE_DIR/forkline" ] \
+  || [ "$FORKLINE_DIR/bpf/forkline.h" -nt "$FORKLINE_DIR/forkline" ]; then
+  make -C "$FORKLINE_DIR" build
 fi
-build_tool loupe-timeline "$ACUTTER/bin/loupe-timeline"
-build_tool loupe-scorecard "$ACUTTER/bin/loupe-scorecard"
+build_tool forkline-timeline "$ACUTTER/bin/forkline-timeline"
+build_tool forkline-scorecard "$ACUTTER/bin/forkline-scorecard"
 
 echo "== 2/4 capture live agent workload (needs sudo for the loader)"
 sudo -v
@@ -79,9 +79,9 @@ EOF
 # --enable-net-send-events so the analysis can show per-call byte counts,
 # send/recv volume, and hostnames (empty on loopback, which the analysis
 # should say rather than guess about).
-sudo "$LOUPE_DIR/agentloupe" \
+sudo "$FORKLINE_DIR/forkline" \
   --config "$STAGE/agents.yaml" \
-  --bpf-object "$LOUPE_DIR/bpf/agentloupe.bpf.o" \
+  --bpf-object "$FORKLINE_DIR/bpf/forkline.bpf.o" \
   --enable-syscall-summary --syscall-interval 500ms \
   --enable-io-accounting \
   --enable-file-rw-events --enable-net-send-events \
@@ -97,14 +97,14 @@ wc -l "$OUT"
 if [ ! -s "$OUT" ]; then
   echo "demo: ERROR: capture $OUT is empty — nothing was decoded." >&2
   echo "demo: see the loader output above: 'abi version X, want Y' means a" >&2
-  echo "demo: stale loader binary (fix: make -C \"$LOUPE_DIR\" build);" >&2
+  echo "demo: stale loader binary (fix: make -C \"$FORKLINE_DIR\" build);" >&2
   echo "demo: 'no agent sessions seen' means the agents.yaml rule matched nothing." >&2
   exit 1
 fi
 
 echo "== 3/4 scorecard + timeline summary"
-"$ACUTTER/bin/loupe-scorecard" "$OUT"
-"$ACUTTER/bin/loupe-timeline" "$OUT" | head -30
+"$ACUTTER/bin/forkline-scorecard" "$OUT"
+"$ACUTTER/bin/forkline-timeline" "$OUT" | head -30
 
 echo "== 4/4 AgentCutter analysis"
 if [ "$ANALYSIS" = dry ]; then

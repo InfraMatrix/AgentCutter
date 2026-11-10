@@ -4,7 +4,7 @@ Nothing is assumed about which service, key or model you have. At run time
 AgentCutter looks at what is available, asks each key's own service which
 models it offers, and lets you choose.
 
-Analysis credentials are kept apart from AgentLoupe's coding-agent
+Analysis credentials are kept apart from Forkline's coding-agent
 credentials: AGENT_* variables (the agent being observed) are never used here.
 
 What is discovered (each candidate has an id):

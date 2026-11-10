@@ -3,8 +3,8 @@ from pathlib import Path
 import agentcutter
 
 REPO = Path(agentcutter.__file__).resolve().parents[2]
-FIXTURES = REPO.parent / "AgentLoupe" / "test" / "fixtures"
-BIN = REPO / "bin" / "loupe-timeline"
+FIXTURES = REPO.parent / "forkline" / "test" / "fixtures"
+BIN = REPO / "bin" / "forkline-timeline"
 
 
 def fixture(name: str) -> Path:

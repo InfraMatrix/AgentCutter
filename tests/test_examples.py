@@ -6,7 +6,7 @@ import agentcutter
 from agentcutter.pipeline import build_report
 
 REPO = Path(agentcutter.__file__).resolve().parents[2]
-BIN = REPO / "bin" / "loupe-timeline"
+BIN = REPO / "bin" / "forkline-timeline"
 
 
 def test_live_capture_reduces(tmp_path):
